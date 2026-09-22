@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 'touzenesmy/odysseus'
-          ref: 'improvements'
+          ref: 'Improvements'
 
       # 2. Dynamically pull your repo name (GitLogos/odysseus-docker) and force lowercase
       - name: Prepare Lowercase Docker Tag
