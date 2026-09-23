@@ -4,38 +4,46 @@
 # the final image / Cookbook never has to compile the broken sdists. See
 # docker/build-realesrgan-wheels.sh for the full rationale.
 FROM python:3.14-slim AS realesrgan-wheels
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+ARG INSTALL_LOCAL_AI_SUPPORT=false
 COPY docker/build-realesrgan-wheels.sh /usr/local/bin/build-realesrgan-wheels.sh
-RUN bash /usr/local/bin/build-realesrgan-wheels.sh /wheels
+RUN mkdir -p /wheels \
+        && if [ "$INSTALL_LOCAL_AI_SUPPORT" = "true" ]; then \
+                 apt-get update \
+                 && apt-get install -y --no-install-recommends curl \
+                 && bash /usr/local/bin/build-realesrgan-wheels.sh /wheels \
+                 && rm -rf /var/lib/apt/lists/*; \
+             fi
 
 FROM python:3.14-slim
 
-# System deps. tmux is required by Cookbook for background downloads/serves.
-# openssh-client is required for Cookbook remote server tests, setup, probes,
-# downloads, and serves from Docker installs.
-# git/cmake are required when Cookbook builds llama.cpp on first llama.cpp
-# launch inside Docker.
+# The default image is an external-model client: LLM, embedding, STT, TTS, and
+# image inference run behind API endpoints instead of inside this container.
+# FastEmbed is the exception: its small local embedding model remains bundled
+# for zero-configuration RAG, semantic memory, and tool selection.
+# Opt in to local capabilities with build arguments:
+#   INSTALL_LOCAL_AI_SUPPORT=true  Real-ESRGAN install compatibility
+#   INSTALL_MODEL_TOOLING=true     Cookbook tmux/SSH/build tools + Docker client
+#   INSTALL_OPTIONAL=true          requirements-optional.txt (local STT/TTS etc.)
+# Ollama, vLLM, llama.cpp, SGLang, Diffusers, Torch, and model weights are never
+# baked into this image; Cookbook installs or connects to them separately.
+ARG INSTALL_LOCAL_AI_SUPPORT=false
+ARG INSTALL_MODEL_TOOLING=false
+
 # nodejs/npm provide npx for the built-in Browser MCP server.
 # chromium provides the actual browser binary used by that MCP server.
 # gosu lets the entrypoint drop privileges cleanly so signals still reach
 # uvicorn directly (no extra shell layer like `su`/`sudo` would add).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    cmake \
-    curl \
-    git \
-    nodejs \
-    npm \
-    chromium \
-    tmux \
-    openssh-client \
-    gosu \
-    libgl1 \
-    libglib2.0-0t64 \
-    libxcb1 \
-    libmagic1 \
-    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+        packages="nodejs npm chromium gosu libmagic1"; \
+        if [ "$INSTALL_LOCAL_AI_SUPPORT" = "true" ]; then \
+            packages="$packages libgl1 libglib2.0-0t64 libxcb1"; \
+        fi; \
+        if [ "$INSTALL_MODEL_TOOLING" = "true" ]; then \
+            packages="$packages build-essential cmake curl git tmux openssh-client"; \
+        fi; \
+        apt-get update; \
+        apt-get install -y --no-install-recommends $packages; \
+        rm -rf /var/lib/apt/lists/*
 
 # libgl1/libglib2.0-0t64/libxcb1 are runtime shared libs (libGL.so.1,
 # libglib-2.0/libgthread, libxcb.so.1) that opencv-python (cv2) loads. The
@@ -57,17 +65,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # dockerd but not the client binary on slim, so grab the static client
 # tarball from download.docker.com instead.
 ARG DOCKER_CLI_VERSION=29.6.2
-RUN ARCH="$(dpkg --print-architecture)" \
-    && case "$ARCH" in \
-         amd64) DARCH=x86_64 ;; \
-         arm64) DARCH=aarch64 ;; \
-         *) echo "unsupported arch $ARCH"; exit 1 ;; \
-       esac \
-    && curl -fsSL "https://download.docker.com/linux/static/stable/${DARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
-       -o /tmp/docker.tgz \
-    && tar -xzf /tmp/docker.tgz -C /tmp \
-    && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
-    && rm -rf /tmp/docker /tmp/docker.tgz
+RUN if [ "$INSTALL_MODEL_TOOLING" = "true" ]; then \
+        ARCH="$(dpkg --print-architecture)" \
+        && case "$ARCH" in \
+              amd64) DARCH=x86_64 ;; \
+              arm64) DARCH=aarch64 ;; \
+              *) echo "unsupported arch $ARCH"; exit 1 ;; \
+            esac \
+        && curl -fsSL "https://download.docker.com/linux/static/stable/${DARCH}/docker-${DOCKER_CLI_VERSION}.tgz" \
+            -o /tmp/docker.tgz \
+        && tar -xzf /tmp/docker.tgz -C /tmp \
+        && install -m 0755 /tmp/docker/docker /usr/local/bin/docker \
+        && rm -rf /tmp/docker /tmp/docker.tgz; \
+     fi
 
 WORKDIR /app
 
@@ -89,8 +99,10 @@ RUN pip install --no-cache-dir python-magic==0.4.27
 # satisfied, the Cookbook's plain `pip install realesrgan` resolves them from
 # wheels instead of rebuilding the sdists that fail on Python 3.14.
 COPY --from=realesrgan-wheels /wheels/ /tmp/odysseus-wheels/
-RUN pip install --no-cache-dir --no-deps /tmp/odysseus-wheels/*.whl \
-    && rm -rf /tmp/odysseus-wheels
+RUN if [ "$INSTALL_LOCAL_AI_SUPPORT" = "true" ]; then \
+            pip install --no-cache-dir --no-deps /tmp/odysseus-wheels/*.whl; \
+        fi \
+        && rm -rf /tmp/odysseus-wheels
 
 # Copy app code
 COPY . .
