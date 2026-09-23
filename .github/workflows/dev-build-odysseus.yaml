@@ -4,6 +4,24 @@ on:
   schedule:
     - cron: '0 0 */5 * *'
   workflow_dispatch:
+    inputs:
+      install_local_ai_support:
+        description: Include FastEmbed and Real-ESRGAN compatibility
+        type: boolean
+        required: false
+        default: false
+
+      install_model_tooling:
+        description: Include Cookbook, SSH, build tools, and Docker CLI
+        type: boolean
+        required: false
+        default: false
+
+      install_optional:
+        description: Include optional Python features such as local STT/TTS
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
